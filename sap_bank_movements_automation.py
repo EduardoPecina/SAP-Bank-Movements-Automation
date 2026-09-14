@@ -27,7 +27,8 @@ WHAT THIS DEMONSTRATES
   - Business-day date logic respecting national holidays and a daily
     data-availability cutoff time (via the `holidays` library).
   - Parsing a semi-structured, tab-delimited legacy export format with
-    positional field detection.
+    positional field detection, including SAP's trailing-minus-sign
+    convention for negative amounts (e.g. "1,000.00-").
   - Driving Excel via COM (win32com) to append rows to a live
     Excel Table (ListObject) on a cloud-hosted (SharePoint) workbook,
     letting Excel's own formula columns recalculate automatically.
@@ -38,17 +39,18 @@ WHAT THIS DEMONSTRATES
 
 CONFIGURATION
 -------------
-All environment-specific values are read from environment variables
-(see the CONFIGURATION section below). Copy `.env.example` to `.env`,
-fill in your own values, and load them before running (e.g. with
-`python-dotenv`), or export them in your shell.
+All environment-specific values are read from environment variables.
+Copy `.env.example` to `.env` and fill in your own values -- it is
+loaded automatically on startup via `python-dotenv`.
 
 REQUIREMENTS
 ------------
-  pip install pywin32 holidays python-dotenv --break-system-packages
+  pip install -r requirements.txt
 
-Requires an already-open, logged-in SAP GUI session with GUI Scripting
-enabled (Options > Accessibility & Scripting > Scripting).
+Requires Python 3.10+ (for PEP 604 `X | None` type hints), an
+already-open, logged-in SAP GUI session with GUI Scripting enabled
+(Options > Accessibility & Scripting > Scripting), and Excel installed
+locally to drive via COM.
 """
 
 import os
@@ -58,6 +60,9 @@ from datetime import date, timedelta, datetime
 
 import holidays
 import win32com.client as win32
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # =============================================================================
@@ -65,7 +70,7 @@ import win32com.client as win32
 # real company data here.
 # =============================================================================
 
-COMPANY_CODE = os.environ.get("SAP_COMPANY_CODE", "XXXX")          # e.g. SAP "Sociedad"
+COMPANY_CODE = os.environ.get("SAP_COMPANY_CODE", "XXXX")          # SAP company code (Bukrs)
 BANK_ACCOUNT = os.environ.get("SAP_BANK_ACCOUNT", "00000000")       # G/L account number
 MOVEMENT_CLASS = os.environ.get("SAP_MOVEMENT_CLASS", "XX")         # e.g. movement/document class filter
 DATA_CUTOFF_HOUR = int(os.environ.get("DATA_CUTOFF_HOUR", "10"))    # hour before which source data isn't ready
@@ -75,6 +80,13 @@ EXPORT_FOLDER = os.environ.get("EXPORT_FOLDER", r"C:\temp\sap_exports")
 
 SAP_FAVORITE_NODE = os.environ.get("SAP_FAVORITE_NODE", "F00001")   # favorites-tree node id
 SAP_LAYOUT_VARIANT = os.environ.get("SAP_LAYOUT_VARIANT", "/DEFAULT")
+
+# The on-screen text of the ALV column header used to locate and filter
+# the movement-class column. SAP GUI renders this in whatever logon
+# language the session uses (e.g. "Class" in English, "Clase" in
+# Spanish, "Klasse" in German) -- set this to match your own SAP GUI
+# language exactly, including capitalization.
+MOVEMENT_CLASS_COLUMN_LABEL = os.environ.get("SAP_MOVEMENT_CLASS_COLUMN_LABEL", "Class")
 
 EXCEL_WORKBOOK_URL_TEMPLATE = os.environ.get(
     "EXCEL_WORKBOOK_URL_TEMPLATE",
@@ -185,7 +197,7 @@ def navigate_to_results(session, query_date: str) -> None:
     session.findById("wnd[0]/usr").horizontalScrollbar.position = 41
     time.sleep(0.5)
 
-    class_column_id = find_label_by_text(session, "Clase")  # column header, adjust to your SAP language
+    class_column_id = find_label_by_text(session, MOVEMENT_CLASS_COLUMN_LABEL)
     if class_column_id is None:
         raise RuntimeError("Could not find the movement-class column on screen.")
 
@@ -261,12 +273,22 @@ DATE_PATTERN = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 
 
 def clean_amount(text: str) -> float | str | None:
-    """Converts '2,966.00' to 2966.0 (float). Non-numeric input is returned as-is."""
+    """
+    Converts SAP-formatted numbers to float, e.g. '2,966.00' -> 2966.0.
+
+    SAP renders negative amounts with a trailing minus sign rather than
+    a leading one (e.g. '2,966.00-'), which Python's float() cannot
+    parse directly -- that sign is detected and applied separately.
+    Non-numeric input is returned unchanged.
+    """
     text = text.strip()
     if text == "":
         return None
+    is_negative = text.endswith("-")
+    numeric_part = text[:-1] if is_negative else text
     try:
-        return float(text.replace(",", ""))
+        value = float(numeric_part.replace(",", ""))
+        return -value if is_negative else value
     except ValueError:
         return text
 
