@@ -45,35 +45,49 @@ This script automates the entire flow end to end.
   daily data-availability cutoff (via the `holidays` library).
 - **Positional parsing** of a legacy tab-delimited export format,
   locating the start of each record by pattern-matching a date field
-  rather than assuming a fixed column count.
+  rather than assuming a fixed column count, and correctly handling
+  SAP's convention of a trailing (rather than leading) minus sign on
+  negative amounts.
 - **Excel COM automation** (`win32com`) appending rows to a live
   `ListObject` (Excel Table) instead of writing to raw cell ranges,
   so formula-driven columns extend automatically.
-- **Defensive design**: guaranteed Excel process cleanup via
-  `try/finally` (no orphaned `EXCEL.EXE` processes on failure), and a
-  hard stop when the day's source data isn't available yet instead of
-  running against stale or partial data.
+
+## Safety & reliability
+
+- Refuses to run before the configured data-cutoff hour, instead of
+  querying SAP for a day whose data isn't fully published yet.
+- The only file this script ever deletes is its own same-day temp
+  export in `EXPORT_FOLDER`, and only to avoid SAP's overwrite
+  confirmation dialog on a rerun — it never touches the destination
+  Excel workbook's existing data.
+- Guaranteed Excel process cleanup via `try/finally`, so a failure
+  mid-run never leaves an orphaned `EXCEL.EXE` process behind.
+- Movement fields are written to the Excel table by column name, not
+  position, so reordering the table's columns doesn't silently
+  misalign the data.
 
 ## Requirements
 
 ```
-pip install pywin32 holidays python-dotenv
+pip install -r requirements.txt
 ```
 
-Requires an already-open, logged-in SAP GUI session with GUI
-Scripting enabled (Options > Accessibility & Scripting > Scripting).
+Requires Python 3.10+, an already-open, logged-in SAP GUI session
+with GUI Scripting enabled (Options > Accessibility & Scripting >
+Scripting), and Excel installed locally to drive via COM.
 
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in your own values (SAP
 company/account codes, export folder, SharePoint workbook URL
-template, etc.), then load them before running — e.g. with
-`python-dotenv`, or by exporting them in your shell.
+template, etc. — see the comments in `.env.example` for what each one
+means). The script loads `.env` automatically on startup via
+`python-dotenv` — no manual exporting needed.
 
 ## Usage
 
 ```bash
-python kyriba_movements_automation_portfolio.py
+python sap_bank_movements_automation.py
 ```
 
 The script exits early with no changes made if run before the
